@@ -2,11 +2,15 @@ using Azure.Data.Tables;
 using Microsoft.AspNetCore.Mvc;
 using TrilhaNetAzureDesafio.Context;
 using TrilhaNetAzureDesafio.Models;
+using Swashbuckle.AspNetCore.Annotations;
+using Microsoft.EntityFrameworkCore;
 
 namespace TrilhaNetAzureDesafio.Controllers;
 
 [ApiController]
-[Route("[controller]")]
+[Tags("Funcionário")]
+[Route("api/employee")]
+[Produces("application/json")]
 public class FuncionarioController : ControllerBase
 {
     private readonly RHContext _context;
@@ -29,7 +33,10 @@ public class FuncionarioController : ControllerBase
         return tableClient;
     }
 
-    [HttpGet("{id}")]
+    [HttpGet("{id:int}")]
+    [SwaggerOperation("Obter funcionário")]
+    [ProducesResponseType(typeof(Funcionario), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(void), StatusCodes.Status404NotFound)]
     public IActionResult ObterPorId(int id)
     {
         var funcionario = _context.Funcionarios.Find(id);
@@ -41,58 +48,98 @@ public class FuncionarioController : ControllerBase
     }
 
     [HttpPost]
+    [SwaggerOperation("Criar funcionário")]
+    [ProducesResponseType(typeof(Funcionario), StatusCodes.Status201Created)]
+    [ProducesResponseType(typeof(void), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(void), StatusCodes.Status409Conflict)]
     public IActionResult Criar(Funcionario funcionario)
     {
+        var email = funcionario.EmailProfissional;
+
+        if (EmailExiste(email))
+            return Conflict($"O endereço de e-mail {email} já está em uso.");
+
         _context.Funcionarios.Add(funcionario);
-        // TODO: Chamar o método SaveChanges do _context para salvar no Banco SQL
+        _context.SaveChanges();
 
-        var tableClient = GetTableClient();
-        var funcionarioLog = new FuncionarioLog(funcionario, TipoAcao.Inclusao, funcionario.Departamento, Guid.NewGuid().ToString());
+        TableClient tableClient = GetTableClient();
+        FuncionarioLog funcionarioLog = new(funcionario, TipoAcao.Inclusao, funcionario.Departamento, Guid.NewGuid().ToString());
 
-        // TODO: Chamar o método UpsertEntity para salvar no Azure Table
+        tableClient.UpsertEntity(funcionarioLog);
 
         return CreatedAtAction(nameof(ObterPorId), new { id = funcionario.Id }, funcionario);
     }
 
-    [HttpPut("{id}")]
-    public IActionResult Atualizar(int id, Funcionario funcionario)
+    [HttpGet]
+    [SwaggerOperation("Obter todos os funcionários")]
+    [ProducesResponseType(typeof(void), StatusCodes.Status204NoContent)]
+    [ProducesResponseType(typeof(IEnumerable<Funcionario>), StatusCodes.Status200OK)]
+    public IActionResult ObterTodosFuncionarios()
     {
-        var funcionarioBanco = _context.Funcionarios.Find(id);
+        if (!_context.Funcionarios.Any())
+            return NoContent();
 
-        if (funcionarioBanco == null)
-            return NotFound();
+        return Ok(_context.Funcionarios.ToList());
+    }
 
-        funcionarioBanco.Nome = funcionario.Nome;
-        funcionarioBanco.Endereco = funcionario.Endereco;
-        // TODO: As propriedades estão incompletas
+    [HttpPut("{id:int}")]
+    [SwaggerOperation("Atualizar funcionário")]
+    [ProducesResponseType(typeof(Funcionario), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(void), StatusCodes.Status400BadRequest)]
+    public IActionResult Atualizar(int id, [FromBody] Funcionario funcionario)
+    {
+        if (!FuncionarioExiste(id))
+            return BadRequest();
 
-        // TODO: Chamar o método de Update do _context.Funcionarios para salvar no Banco SQL
+        var email = funcionario.EmailProfissional;
+
+        if (EmailExiste(email))
+            return Conflict($"O endereço de e-mail '{email}' já está em uso.");
+
+        funcionario.Id = id;
+
+        _context.Entry(funcionario).State = EntityState.Modified;
         _context.SaveChanges();
 
-        var tableClient = GetTableClient();
-        var funcionarioLog = new FuncionarioLog(funcionarioBanco, TipoAcao.Atualizacao, funcionarioBanco.Departamento, Guid.NewGuid().ToString());
+        TableClient tableClient = GetTableClient();
+        FuncionarioLog funcionarioLog = new(funcionario, TipoAcao.Atualizacao, funcionario.Departamento, Guid.NewGuid().ToString());
 
-        // TODO: Chamar o método UpsertEntity para salvar no Azure Table
+        tableClient.UpsertEntity(funcionarioLog);
 
-        return Ok();
+        return Ok(funcionario);
     }
 
     [HttpDelete("{id}")]
+    [SwaggerOperation("Excluir funcionário")]
+    [ProducesResponseType(typeof(void), StatusCodes.Status204NoContent)]
+    [ProducesResponseType(typeof(void), StatusCodes.Status400BadRequest)]
     public IActionResult Deletar(int id)
     {
         var funcionarioBanco = _context.Funcionarios.Find(id);
 
         if (funcionarioBanco == null)
-            return NotFound();
+            return BadRequest();
 
-        // TODO: Chamar o método de Remove do _context.Funcionarios para salvar no Banco SQL
+        _context.Remove(funcionarioBanco);
         _context.SaveChanges();
 
-        var tableClient = GetTableClient();
-        var funcionarioLog = new FuncionarioLog(funcionarioBanco, TipoAcao.Remocao, funcionarioBanco.Departamento, Guid.NewGuid().ToString());
+        TableClient tableClient = GetTableClient();
+        FuncionarioLog funcionarioLog = new(funcionarioBanco, TipoAcao.Remocao, funcionarioBanco.Departamento, Guid.NewGuid().ToString());
 
-        // TODO: Chamar o método UpsertEntity para salvar no Azure Table
+        tableClient.DeleteEntity(funcionarioLog.PartitionKey, funcionarioLog.RowKey);
 
         return NoContent();
+    }
+
+    private bool FuncionarioExiste(int id)
+    {
+        return _context.Funcionarios.Any(funcionario => funcionario.Id == id);
+    }
+
+    private bool EmailExiste(string email)
+    {
+        return _context.Funcionarios.Any(funcionario =>
+            funcionario.EmailProfissional.ToLower() == email.ToLower()
+        );
     }
 }
